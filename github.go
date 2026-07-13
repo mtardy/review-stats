@@ -76,7 +76,7 @@ func fetchPullRequests(state string, cutoffDate time.Time) ([]PullRequest, error
 
 	for {
 		url := fmt.Sprintf(
-			"%s/repos/%s/%s/pulls?state=%s&per_page=%d&page=%d&sort=updated&direction=desc",
+			"%s/repos/%s/%s/pulls?state=%s&per_page=%d&page=%d&sort=created&direction=desc",
 			githubAPIBase, *owner, *repo, state, perPage, page,
 		)
 
