@@ -3,13 +3,151 @@ package main
 import (
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
 )
 
-func printStats(stats map[string]*ReviewerStats) {
+type sortOption string
+
+const (
+	sortRate      sortOption = "rate"
+	sortRequested sortOption = "requested"
+	sortCompleted sortOption = "completed"
+	sortPending   sortOption = "pending"
+	sortResponse  sortOption = "response"
+	sortApproved  sortOption = "approved"
+	sortCommented sortOption = "commented"
+	sortChanges   sortOption = "changes"
+)
+
+type reviewerKV struct {
+	Key   string
+	Value *ReviewerStats
+}
+
+// sortAliases maps alternative names to canonical sort options
+var sortAliases = map[string]sortOption{
+	"request":  sortRequested,
+	"requests": sortRequested,
+	"req":      sortRequested,
+	"reqs":     sortRequested,
+
+	"complete": sortCompleted,
+	"done":     sortCompleted,
+	"comp":     sortCompleted,
+
+	"pend":    sortPending,
+	"waiting": sortPending,
+	"wait":    sortPending,
+
+	"resp":         sortResponse,
+	"responsetime": sortResponse,
+	"time":         sortResponse,
+	"avgresponse":  sortResponse,
+	"avg":          sortResponse,
+
+	"approve":   sortApproved,
+	"approvals": sortApproved,
+	"approval":  sortApproved,
+	"app":       sortApproved,
+
+	"comment":  sortCommented,
+	"comments": sortCommented,
+	"com":      sortCommented,
+
+	"change":           sortChanges,
+	"changesrequested": sortChanges,
+	"changesreq":       sortChanges,
+	"cr":               sortChanges,
+
+	"completion":     sortRate,
+	"completionrate": sortRate,
+	"percentage":     sortRate,
+	"pct":            sortRate,
+	"percent":        sortRate,
+}
+
+// comparePercentage compares two percentages (numerator/denominator)
+func comparePercentage(num1, denom1, num2, denom2 int) bool {
+	pct1 := float64(0)
+	if denom1 > 0 {
+		pct1 = float64(num1) / float64(denom1)
+	}
+	pct2 := float64(0)
+	if denom2 > 0 {
+		pct2 = float64(num2) / float64(denom2)
+	}
+	return pct1 > pct2
+}
+
+func sortReviewers(sorted []reviewerKV, sortBy string) error {
+	validSortOptions := []sortOption{sortRate, sortRequested, sortCompleted, sortPending, sortResponse, sortApproved, sortCommented, sortChanges}
+
+	var normalizedSortBy sortOption
+	if alias, ok := sortAliases[strings.ToLower(sortBy)]; ok {
+		normalizedSortBy = alias
+	} else {
+		normalizedSortBy = sortOption(strings.ToLower(sortBy))
+	}
+
+	if !slices.Contains(validSortOptions, normalizedSortBy) {
+		validStrings := make([]string, len(validSortOptions))
+		for i, opt := range validSortOptions {
+			validStrings[i] = string(opt)
+		}
+		return fmt.Errorf("invalid sort option '%s'. Valid options: %s", sortBy, strings.Join(validStrings, ", "))
+	}
+
+	sort.Slice(sorted, func(i, j int) bool {
+		si, sj := sorted[i].Value, sorted[j].Value
+
+		switch normalizedSortBy {
+		case sortRequested:
+			return si.Requested > sj.Requested
+		case sortCompleted:
+			return si.Completed > sj.Completed
+		case sortPending:
+			return si.Pending > sj.Pending
+		case sortResponse:
+			// Sort by average response time (lower is better)
+			avgI := time.Duration(0)
+			if si.ResponseCount > 0 {
+				avgI = si.TotalResponse / time.Duration(si.ResponseCount)
+			}
+			avgJ := time.Duration(0)
+			if sj.ResponseCount > 0 {
+				avgJ = sj.TotalResponse / time.Duration(sj.ResponseCount)
+			}
+			// Handle cases where one or both have no response time
+			if si.ResponseCount == 0 && sj.ResponseCount == 0 {
+				return false
+			}
+			if si.ResponseCount == 0 {
+				return false
+			}
+			if sj.ResponseCount == 0 {
+				return true
+			}
+			return avgI < avgJ
+		case sortApproved:
+			return comparePercentage(si.Approved, si.Completed, sj.Approved, sj.Completed)
+		case sortCommented:
+			return comparePercentage(si.Commented, si.Completed, sj.Commented, sj.Completed)
+		case sortChanges:
+			return comparePercentage(si.ChangesRequested, si.Completed, sj.ChangesRequested, sj.Completed)
+		case sortRate:
+			return comparePercentage(si.Completed, si.Requested, sj.Completed, sj.Requested)
+		}
+		return false
+	})
+
+	return nil
+}
+
+func printStats(stats map[string]*ReviewerStats, sortBy string) {
 	fmt.Println()
 	fmt.Println("📊 REVIEWER STATISTICS")
 	fmt.Println()
@@ -23,11 +161,7 @@ func printStats(stats map[string]*ReviewerStats) {
 	// Calculate minimum threshold
 	minThreshold := max(int(float64(totalReviews)*(*minReviewsPercent/100.0)), 1)
 
-	type kv struct {
-		Key   string
-		Value *ReviewerStats
-	}
-	var sorted []kv
+	var sorted []reviewerKV
 	var filtered []string
 	for k, v := range stats {
 		// Filter out reviewers below threshold
@@ -35,7 +169,7 @@ func printStats(stats map[string]*ReviewerStats) {
 			filtered = append(filtered, k)
 			continue
 		}
-		sorted = append(sorted, kv{k, v})
+		sorted = append(sorted, reviewerKV{k, v})
 	}
 
 	if len(filtered) > 0 {
@@ -44,17 +178,10 @@ func printStats(stats map[string]*ReviewerStats) {
 			len(filtered), minThreshold, *minReviewsPercent, strings.Join(filtered, ", "))
 	}
 
-	sort.Slice(sorted, func(i, j int) bool {
-		rateI := float64(0)
-		if sorted[i].Value.Requested > 0 {
-			rateI = float64(sorted[i].Value.Completed) / float64(sorted[i].Value.Requested)
-		}
-		rateJ := float64(0)
-		if sorted[j].Value.Requested > 0 {
-			rateJ = float64(sorted[j].Value.Completed) / float64(sorted[j].Value.Requested)
-		}
-		return rateI > rateJ
-	})
+	if err := sortReviewers(sorted, sortBy); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "Reviewer\tRequested\tCompleted\tPending\tRate\tAvg Resp\tApproved\tCommented\tChanges Req")
