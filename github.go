@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"time"
 )
 
@@ -113,50 +114,101 @@ func githubGet(url string, trustCache bool) (data []byte, fromCache bool, err er
 	return data, false, nil
 }
 
+type pageResult struct {
+	prs   []PullRequest
+	page  int
+	err   error
+	cache bool
+}
+
 func fetchPullRequests(state string, cutoffDate time.Time) ([]PullRequest, error) {
 	var allPRs []PullRequest
-	page := 1
+	const batchSize = 10
+	startPage := 1
 
 	for {
-		url := fmt.Sprintf(
-			"%s/repos/%s/%s/pulls?state=%s&per_page=%d&page=%d&sort=created&direction=desc",
-			githubAPIBase, *owner, *repo, state, perPage, page,
-		)
+		// Fetch multiple pages in parallel
+		resultChan := make(chan pageResult, batchSize)
 
-		// Always validate PR lists with ETag (they change frequently)
-		body, fromCache, err := githubGet(url, false)
-		if err != nil {
-			return allPRs, err
+		for i := range batchSize {
+			page := startPage + i
+			go func(p int) {
+				url := fmt.Sprintf(
+					"%s/repos/%s/%s/pulls?state=%s&per_page=%d&page=%d&sort=created&direction=desc",
+					githubAPIBase, *owner, *repo, state, perPage, p,
+				)
+
+				// Always validate PR lists with ETag (they change frequently)
+				body, fromCache, err := githubGet(url, false)
+				if err != nil {
+					resultChan <- pageResult{page: p, err: err}
+					return
+				}
+
+				var prs []PullRequest
+				if err := json.Unmarshal(body, &prs); err != nil {
+					resultChan <- pageResult{page: p, err: fmt.Errorf("JSON parse error: %w", err)}
+					return
+				}
+
+				resultChan <- pageResult{prs: prs, page: p, cache: fromCache}
+			}(page)
 		}
 
-		fmt.Printf("  %s Fetching %s PRs — page %d...\n", cacheStatusIcon(false, fromCache), state, page)
-
-		var prs []PullRequest
-		if err := json.Unmarshal(body, &prs); err != nil {
-			return allPRs, fmt.Errorf("JSON parse error: %w", err)
+		// Collect results from this batch
+		results := make([]pageResult, batchSize)
+		for i := range batchSize {
+			results[i] = <-resultChan
 		}
+		close(resultChan)
 
-		if len(prs) == 0 {
-			break
-		}
+		// Sort results by page number to maintain order
+		sort.Slice(results, func(i, j int) bool {
+			return results[i].page < results[j].page
+		})
 
-		// Filter PRs by creation date and add to results
-		oldestInPage := true
-		for _, pr := range prs {
-			if pr.CreatedAt.Before(cutoffDate) {
-				continue
+		// Process results in order
+		shouldStop := false
+		pagesProcessed := 0
+
+		for _, result := range results {
+			if result.err != nil {
+				return allPRs, result.err
 			}
-			oldestInPage = false
-			allPRs = append(allPRs, pr)
+
+			fmt.Printf("  %s Fetching %s PRs — page %d...\n",
+				cacheStatusIcon(false, result.cache), state, result.page)
+
+			if len(result.prs) == 0 {
+				shouldStop = true
+				break
+			}
+
+			// Filter PRs by creation date and add to results
+			oldestInPage := true
+			for _, pr := range result.prs {
+				if pr.CreatedAt.Before(cutoffDate) {
+					continue
+				}
+				oldestInPage = false
+				allPRs = append(allPRs, pr)
+			}
+
+			// If all PRs in this page are older than cutoff, stop fetching
+			if oldestInPage && len(result.prs) > 0 {
+				fmt.Printf("  Reached PRs older than cutoff date, stopping...\n")
+				shouldStop = true
+				break
+			}
+
+			pagesProcessed++
 		}
 
-		// If all PRs in this page are older than cutoff, stop fetching
-		if oldestInPage && len(prs) > 0 {
-			fmt.Printf("  Reached PRs older than cutoff date, stopping...\n")
+		if shouldStop || pagesProcessed < batchSize {
 			break
 		}
 
-		page++
+		startPage += batchSize
 	}
 
 	return allPRs, nil
