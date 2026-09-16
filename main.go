@@ -28,7 +28,7 @@ func processPR(pr PullRequest) PRResult {
 	}
 
 	// Fetch pending reviewers (still waiting)
-	pendingReviewers, err := fetchRequestedReviewers(pr.Number)
+	pendingReviewers, reviewersTrusted, reviewersFromCache, err := fetchRequestedReviewers(pr.Number, pr.State)
 	if err != nil {
 		result.Err = fmt.Errorf("could not fetch requested reviewers: %w", err)
 		return result
@@ -36,11 +36,15 @@ func processPR(pr PullRequest) PRResult {
 	result.PendingReviewers = pendingReviewers
 
 	// Fetch completed reviews
-	reviews, err := fetchReviews(pr.Number)
+	reviews, reviewsTrusted, reviewsFromCache, err := fetchReviews(pr.Number, pr.State)
 	if err != nil {
 		result.Err = fmt.Errorf("could not fetch reviews: %w", err)
 		return result
 	}
+
+	// Determine overall cache status
+	result.Trusted = reviewersTrusted && reviewsTrusted
+	result.FromCache = reviewersFromCache && reviewsFromCache
 
 	// Track who completed reviews (keep the most recent review per reviewer)
 	for _, r := range reviews {
@@ -165,7 +169,12 @@ func main() {
 	processed := 0
 	for result := range resultChan {
 		processed++
-		fmt.Printf("  [%d/%d] PR #%d: %s\n", processed, len(allPRs), result.PR.Number, truncate(result.PR.Title, 50))
+		fmt.Printf("  %s [%d/%d] PR #%d: %s\n",
+			cacheStatusIcon(result.Trusted, result.FromCache),
+			processed,
+			len(allPRs),
+			result.PR.Number,
+			truncate(result.PR.Title, 50))
 
 		if result.Err != nil {
 			log.Printf("    ⚠️  Error processing PR: %v", result.Err)

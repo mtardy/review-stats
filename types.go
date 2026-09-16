@@ -55,6 +55,8 @@ type PRResult struct {
 	PR                 PullRequest
 	CompletedReviewers map[string]ReviewDetail
 	PendingReviewers   []string
+	Trusted            bool // true if cache was trusted (closed PR)
+	FromCache          bool // true if data came from cache (ETag validated or trusted)
 	Err                error
 }
 

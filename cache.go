@@ -2,6 +2,7 @@ package main
 
 import (
 	"compress/gzip"
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -14,6 +15,11 @@ var (
 	cacheDirPath string
 )
 
+type cacheEntry struct {
+	ETag string `json:"etag"`
+	Data []byte `json:"data"`
+}
+
 func getCacheFilePath(url string) string {
 	h := fnv.New128a()
 	h.Write([]byte(url))
@@ -21,38 +27,54 @@ func getCacheFilePath(url string) string {
 	return filepath.Join(cacheDirPath, filename)
 }
 
-func loadFromCache(url string) ([]byte, bool) {
+func loadFromCache(url string) (data []byte, etag string, found bool) {
 	if !useCache {
-		return nil, false
+		return nil, "", false
 	}
 
 	cachePath := getCacheFilePath(url)
 	file, err := os.Open(cachePath)
 	if err != nil {
-		return nil, false
+		return nil, "", false
 	}
 	defer file.Close()
 
 	gzReader, err := gzip.NewReader(file)
 	if err != nil {
-		return nil, false
+		return nil, "", false
 	}
 	defer gzReader.Close()
 
-	data, err := io.ReadAll(gzReader)
+	compressed, err := io.ReadAll(gzReader)
 	if err != nil {
-		return nil, false
+		return nil, "", false
 	}
-	return data, true
+
+	var entry cacheEntry
+	if err := json.Unmarshal(compressed, &entry); err != nil {
+		return nil, "", false
+	}
+
+	return entry.Data, entry.ETag, true
 }
 
-func saveToCache(url string, data []byte) error {
+func saveToCache(url string, data []byte, etag string) error {
 	if !useCache {
 		return nil
 	}
 
 	// Ensure cache directory exists
 	if err := os.MkdirAll(cacheDirPath, 0755); err != nil {
+		return err
+	}
+
+	entry := cacheEntry{
+		ETag: etag,
+		Data: data,
+	}
+
+	entryData, err := json.Marshal(entry)
+	if err != nil {
 		return err
 	}
 
@@ -66,6 +88,6 @@ func saveToCache(url string, data []byte) error {
 	gzWriter := gzip.NewWriter(file)
 	defer gzWriter.Close()
 
-	_, err = gzWriter.Write(data)
+	_, err = gzWriter.Write(entryData)
 	return err
 }
