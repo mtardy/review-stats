@@ -117,7 +117,7 @@ func main() {
 	}
 
 	allPRs := append(openPRs, closedPRs...)
-	fmt.Printf("\n📊 Analyzing %d PRs (%d open, %d closed)...\n\n",
+	fmt.Printf("\n📊 Analyzing %d PRs (%d open, %d closed)...\n",
 		len(allPRs), len(openPRs), len(closedPRs))
 
 	stats := make(map[string]*ReviewerStats)
@@ -147,6 +147,28 @@ func main() {
 		}
 	}
 
+	// Count PRs to process (after filtering)
+	prsToProcess := 0
+	openToProcess := 0
+	closedToProcess := 0
+	for _, pr := range allPRs {
+		if !excludedAuthors[pr.User.Login] {
+			prsToProcess++
+			if pr.State == "open" {
+				openToProcess++
+			} else {
+				closedToProcess++
+			}
+		}
+	}
+
+	// Show filtered count if filtering is active
+	if len(excludedAuthors) > 0 && prsToProcess < len(allPRs) {
+		fmt.Printf("🔍 After author filtering: %d PRs (%d open, %d closed)\n",
+			prsToProcess, openToProcess, closedToProcess)
+	}
+	fmt.Println()
+
 	// Send PRs to workers (with optional filtering)
 	go func() {
 		for _, pr := range allPRs {
@@ -172,7 +194,7 @@ func main() {
 		fmt.Printf("  %s [%d/%d] PR #%d: %s\n",
 			cacheStatusIcon(result.Trusted, result.FromCache),
 			processed,
-			len(allPRs),
+			prsToProcess,
 			result.PR.Number,
 			truncate(result.PR.Title, 50))
 
