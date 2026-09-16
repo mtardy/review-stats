@@ -17,7 +17,7 @@ var (
 	timeWindowDays    = flag.Int("days", 365, "Number of days to look back for PRs")
 	cacheDir          = flag.String("cache", "review-stats-cache", "Directory to cache GitHub API responses")
 	minReviewsPercent = flag.Float64("min-reviews-percent", 0.5, "Minimum percentage of total reviews to include a reviewer (e.g., 0.5 = 0.5%)")
-	excludeAuthors    = flag.String("exclude-authors", "", "Comma-separated list of PR author usernames to exclude (e.g., 'bot1,bot2')")
+	excludeAuthors    = flag.String("exclude-authors", "", "Comma-separated list of PR author usernames to exclude (e.g., 'cilium-renovate[bot],dependabot[bot]')")
 	sortBy            = flag.String("sort", "rate", "Sort reviewers by: rate, requested, completed, pending, response, approved, commented, changes")
 )
 
